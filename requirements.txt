@@ -1,0 +1,6 @@
+# Core dependencies
+click>=8.0.0  # CLI framework
+pyyaml>=6.0  # For reading check definitions
+colorama>=0.4.0  # Colored terminal output
+
+# Development dependencies (install with: pip install -r requirements-dev.txt)
