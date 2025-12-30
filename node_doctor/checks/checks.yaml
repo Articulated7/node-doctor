@@ -1,0 +1,760 @@
+
+# Node Doctor Check Definitions
+# This file defines all security and configuration checks
+
+version: "0.1.0"
+
+# Check categories
+categories:
+  tor_config:
+    name: "Tor Configuration"
+    description: "Validates torrc settings and relay configuration"
+  host_security:
+    name: "Host Security"
+    description: "System-level security configurations"
+  info_leak:
+    name: "Information Leakage"
+    description: "Privacy and anonymity concerns"
+  best_practices:
+    name: "Operational Best Practices"
+    description: "Recommended operational procedures"
+
+# Severity levels
+severity_levels:
+  critical:
+    symbol: "🔴"
+    name: "CRITICAL"
+    description: "Must be fixed - security vulnerability or will cause relay to fail"
+  high:
+    symbol: "🟠"
+    name: "HIGH"
+    description: "Should be fixed - significant security or operational issue"
+  medium:
+    symbol: "🟡"
+    name: "MEDIUM"
+    description: "Recommended fix - improves security or reliability"
+  low:
+    symbol: "🟢"
+    name: "LOW"
+    description: "Optional improvement - minor enhancement"
+
+# Access levels
+access_levels:
+  basic:
+    name: "Basic"
+    description: "Read-only access to Tor configuration files"
+    requires_sudo: false
+    requires_network: false
+  system:
+    name: "System"
+    description: "Read-only access to system configs (SSH, firewall)"
+    requires_sudo: true
+    requires_network: false
+  network:
+    name: "Network"
+    description: "Makes external connections to verify connectivity and versions"
+    requires_sudo: false
+    requires_network: true
+
+# Individual checks
+checks:
+  # ==========================================
+  # TOR CONFIGURATION CHECKS
+  # ==========================================
+  
+  tc_001:
+    id: "TC-001"
+    name: "ContactInfo Present"
+    category: "tor_config"
+    severity: "medium"
+    access_level: "basic"
+    enabled: true
+    description: "Verifies that the relay has ContactInfo set"
+    
+    files_to_check:
+      - "/etc/tor/torrc"
+      - "/usr/local/etc/tor/torrc"
+    
+    pass_criteria:
+      - "ContactInfo directive exists"
+      - "Value is not empty"
+      - "Value is not a placeholder"
+    
+    fail_criteria:
+      - "ContactInfo missing"
+      - "ContactInfo empty"
+      - "ContactInfo is obviously fake"
+    
+    fake_values:
+      - "none"
+      - "n/a"
+      - "todo"
+      - "changeme"
+      - "your-email@example.com"
+    
+    recommendation: |
+      Add a ContactInfo line to your torrc:
+      ContactInfo your-email@example.com [tor-relay]
+      
+      Consider using:
+      - Dedicated email for relay operations
+      - PGP key fingerprint
+      - Tor Project forum username
+
+  tc_002:
+    id: "TC-002"
+    name: "ContactInfo Not Overly Revealing"
+    category: "tor_config"
+    severity: "medium"
+    access_level: "basic"
+    enabled: true
+    description: "Checks that ContactInfo doesn't contain personally identifying information"
+    
+    files_to_check:
+      - "/etc/tor/torrc"
+      - "/usr/local/etc/tor/torrc"
+    
+    warning_patterns:
+      - type: "full_name"
+        pattern: "\\b[A-Z][a-z]+ [A-Z][a-z]+\\b"
+        description: "Appears to contain a full name"
+      - type: "phone"
+        pattern: "\\b\\d{3}[-.]?\\d{3}[-.]?\\d{4}\\b"
+        description: "Appears to contain a phone number"
+      - type: "address"
+        pattern: "\\b\\d+\\s+[A-Za-z]+\\s+(Street|St|Avenue|Ave|Road|Rd|Drive|Dr)\\b"
+        description: "Appears to contain a street address"
+    
+    recommendation: |
+      Your ContactInfo may reveal personal information.
+      Consider using:
+      - Anonymous email (ProtonMail, Tutanota, etc.)
+      - PGP key only
+      - Tor forum username
+      - Avoid real names and addresses
+
+  tc_003:
+    id: "TC-003"
+    name: "Relay Family Declaration Format"
+    category: "tor_config"
+    severity: "high"
+    access_level: "basic"
+    enabled: true
+    description: "Validates MyFamily directive format if present"
+    
+    files_to_check:
+      - "/etc/tor/torrc"
+      - "/usr/local/etc/tor/torrc"
+    
+    validation_rules:
+      - "Fingerprints must be 40 hexadecimal characters"
+      - "Fingerprints must be prefixed with $"
+      - "Multiple fingerprints separated by commas"
+    
+    recommendation: |
+      MyFamily format should be:
+      MyFamily $fingerprint1,$fingerprint2,$fingerprint3
+      
+      Each fingerprint should be:
+      - 40 hexadecimal characters
+      - Prefixed with $
+      - Separated by commas (no spaces)
+      
+      Example:
+      MyFamily $AAAA...(40 chars),$BBBB...(40 chars)
+
+  tc_004:
+    id: "TC-004"
+    name: "Port Configuration"
+    category: "tor_config"
+    severity: "high"
+    access_level: "basic"
+    enabled: true
+    description: "Validates ORPort and DirPort configuration"
+    
+    files_to_check:
+      - "/etc/tor/torrc"
+      - "/usr/local/etc/tor/torrc"
+    
+    port_rules:
+      recommended_orports:
+        - 9001
+        - 443
+        - 9030
+      blocked_ports:
+        - 25
+        - 465
+        - 587
+      min_port: 1
+      max_port: 65535
+      privileged_threshold: 1024
+    
+    recommendation: |
+      Recommended port configurations:
+      - ORPort 9001 (standard)
+      - ORPort 443 (good for firewall traversal)
+      - DirPort 9030 (if serving directory)
+      
+      Avoid:
+      - Ports below 1024 (require root)
+      - Port 25, 465, 587 (email, often blocked)
+
+  tc_005:
+    id: "TC-005"
+    name: "ExitPolicy Configuration"
+    category: "tor_config"
+    severity: "critical"
+    access_level: "basic"
+    enabled: true
+    description: "Verifies ExitPolicy is explicitly set"
+    
+    files_to_check:
+      - "/etc/tor/torrc"
+      - "/usr/local/etc/tor/torrc"
+    
+    pass_criteria:
+      - "ExitPolicy directive exists"
+      - "Policy is explicit (not relying on defaults)"
+    
+    non_exit_policy: "reject *:*"
+    
+    recommendation: |
+      For non-exit relays, add to torrc:
+      ExitPolicy reject *:*
+      
+      For exit relays, define an explicit policy:
+      ExitPolicy accept *:80
+      ExitPolicy accept *:443
+      ExitPolicy reject *:*
+      
+      Never rely on default policies.
+
+  tc_006:
+    id: "TC-006"
+    name: "Bandwidth Configuration"
+    category: "tor_config"
+    severity: "medium"
+    access_level: "basic"
+    enabled: true
+    description: "Checks if bandwidth limits are set appropriately"
+    
+    files_to_check:
+      - "/etc/tor/torrc"
+      - "/usr/local/etc/tor/torrc"
+    
+    validation_rules:
+      - "RelayBandwidthBurst >= RelayBandwidthRate"
+      - "Values are reasonable (> 100 KB)"
+    
+    recommendation: |
+      Bandwidth settings should have:
+      RelayBandwidthBurst >= RelayBandwidthRate
+      
+      Typical configurations:
+      RelayBandwidthRate 1 MBytes
+      RelayBandwidthBurst 2 MBytes
+      
+      Or use AccountingMax for monthly caps:
+      AccountingMax 500 GBytes
+      AccountingStart month 1 00:00
+
+  tc_007:
+    id: "TC-007"
+    name: "Nickname Format"
+    category: "tor_config"
+    severity: "medium"
+    access_level: "basic"
+    enabled: true
+    description: "Validates relay nickname follows Tor requirements"
+    
+    files_to_check:
+      - "/etc/tor/torrc"
+      - "/usr/local/etc/tor/torrc"
+    
+    nickname_rules:
+      min_length: 1
+      max_length: 19
+      allowed_chars: "alphanumeric"
+      reserved_names:
+        - "Unnamed"
+        - "unnamed"
+        - "noname"
+    
+    recommendation: |
+      Nickname must be:
+      - 1-19 characters
+      - Letters and numbers only
+      - No spaces or special characters
+      
+      Choose something memorable but not personally identifying.
+
+  tc_008:
+    id: "TC-008"
+    name: "Tor Version Current"
+    category: "tor_config"
+    severity: "high"
+    access_level: "network"
+    enabled: true
+    description: "Checks if Tor version is current and supported"
+    
+    commands_to_run:
+      - "tor --version"
+    
+    external_checks:
+      - url: "https://www.torproject.org/download/"
+        purpose: "Query current stable version"
+    
+    recommendation: |
+      Your Tor version is outdated.
+      
+      Update via your package manager:
+      sudo apt update && sudo apt upgrade tor
+      
+      Or see: https://support.torproject.org/apt/
+
+  # ==========================================
+  # HOST SECURITY CHECKS
+  # ==========================================
+
+  hs_001:
+    id: "HS-001"
+    name: "SSH Password Authentication Disabled"
+    category: "host_security"
+    severity: "critical"
+    access_level: "system"
+    enabled: true
+    description: "Verifies SSH password authentication is disabled"
+    
+    files_to_check:
+      - "/etc/ssh/sshd_config"
+    
+    required_settings:
+      PasswordAuthentication: "no"
+      ChallengeResponseAuthentication: "no"
+    
+    recommendation: |
+      Edit /etc/ssh/sshd_config:
+      PasswordAuthentication no
+      ChallengeResponseAuthentication no
+      
+      Then reload SSH:
+      sudo systemctl reload sshd
+      
+      Ensure you have SSH keys set up first!
+
+  hs_002:
+    id: "HS-002"
+    name: "SSH Root Login Disabled"
+    category: "host_security"
+    severity: "critical"
+    access_level: "system"
+    enabled: true
+    description: "Ensures root cannot login via SSH directly"
+    
+    files_to_check:
+      - "/etc/ssh/sshd_config"
+    
+    acceptable_settings:
+      PermitRootLogin:
+        - "no"
+        - "prohibit-password"
+    
+    recommendation: |
+      Edit /etc/ssh/sshd_config:
+      PermitRootLogin no
+      
+      Or at minimum:
+      PermitRootLogin prohibit-password
+      
+      Then reload SSH:
+      sudo systemctl reload sshd
+
+  hs_003:
+    id: "HS-003"
+    name: "Firewall Configured"
+    category: "host_security"
+    severity: "high"
+    access_level: "system"
+    enabled: true
+    description: "Checks that a firewall is active and configured"
+    
+    commands_to_check:
+      - "ufw status"
+      - "iptables -L"
+      - "firewall-cmd --state"
+    
+    required_rules:
+      - "SSH port allowed"
+      - "ORPort allowed"
+      - "DirPort allowed (if configured)"
+      - "Default policy restrictive"
+    
+    recommendation: |
+      Enable and configure firewall:
+      
+      For ufw:
+      sudo ufw allow 22/tcp
+      sudo ufw allow 9001/tcp  # Your ORPort
+      sudo ufw enable
+      
+      For iptables:
+      # Allow SSH
+      iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+      # Allow ORPort
+      iptables -A INPUT -p tcp --dport 9001 -j ACCEPT
+      # Default deny
+      iptables -P INPUT DROP
+
+  hs_004:
+    id: "HS-004"
+    name: "Automatic Security Updates Enabled"
+    category: "host_security"
+    severity: "high"
+    access_level: "system"
+    enabled: true
+    description: "Verifies automatic security updates are enabled"
+    
+    distro_checks:
+      debian_ubuntu:
+        package: "unattended-upgrades"
+        service: "unattended-upgrades"
+      rhel_centos:
+        package: "yum-cron"
+        service: "yum-cron"
+      fedora:
+        package: "dnf-automatic"
+        service: "dnf-automatic.timer"
+    
+    recommendation: |
+      Enable automatic security updates:
+      
+      Debian/Ubuntu:
+      sudo apt install unattended-upgrades
+      sudo dpkg-reconfigure -plow unattended-upgrades
+      
+      RHEL/CentOS:
+      sudo yum install yum-cron
+      sudo systemctl enable --now yum-cron
+      
+      Note: Some operators prefer manual updates for stability.
+
+  hs_005:
+    id: "HS-005"
+    name: "Tor Running as Non-Root"
+    category: "host_security"
+    severity: "critical"
+    access_level: "basic"
+    enabled: true
+    description: "Verifies Tor daemon is not running as root"
+    
+    commands_to_run:
+      - "ps aux | grep tor"
+    
+    expected_users:
+      - "debian-tor"
+      - "_tor"
+      - "tor"
+    
+    forbidden_user: "root"
+    
+    recommendation: |
+      CRITICAL: Tor should never run as root!
+      
+      Reinstall Tor via package manager to set up proper user:
+      sudo apt install --reinstall tor
+      
+      Or manually create tor user and configure systemd service.
+
+  hs_006:
+    id: "HS-006"
+    name: "Tor Data Directory Permissions"
+    category: "host_security"
+    severity: "high"
+    access_level: "system"
+    enabled: true
+    description: "Ensures Tor's data directory has correct permissions"
+    
+    directories_to_check:
+      - "/var/lib/tor"
+      - "/var/lib/tor/keys"
+    
+    required_permissions:
+      directory: "0700"
+      keys: "0600"
+    
+    expected_owner: "debian-tor"
+    
+    recommendation: |
+      Fix DataDirectory permissions:
+      sudo chown -R debian-tor:debian-tor /var/lib/tor
+      sudo chmod 700 /var/lib/tor
+      sudo chmod 600 /var/lib/tor/keys/*
+
+  hs_007:
+    id: "HS-007"
+    name: "Unnecessary Services Disabled"
+    category: "host_security"
+    severity: "medium"
+    access_level: "system"
+    enabled: true
+    description: "Checks for unnecessary services that increase attack surface"
+    
+    commands_to_run:
+      - "systemctl list-units --type=service --state=running"
+    
+    suspicious_services:
+      - "apache2"
+      - "nginx"
+      - "httpd"
+      - "mysqld"
+      - "postgresql"
+      - "vsftpd"
+      - "telnet"
+      - "rsh"
+    
+    recommendation: |
+      Review running services:
+      sudo systemctl list-units --type=service --state=running
+      
+      Disable unnecessary services:
+      sudo systemctl disable <service>
+      sudo systemctl stop <service>
+      
+      A relay typically only needs:
+      - SSH
+      - Tor
+      - Basic system services
+
+  # ==========================================
+  # INFORMATION LEAKAGE CHECKS
+  # ==========================================
+
+  il_001:
+    id: "IL-001"
+    name: "Hostname Not Identifying"
+    category: "info_leak"
+    severity: "medium"
+    access_level: "basic"
+    enabled: true
+    description: "Checks if server hostname could reveal operator identity"
+    
+    commands_to_run:
+      - "hostname"
+    
+    warning_patterns:
+      - type: "personal_name"
+        pattern: "\\b[A-Z][a-z]+[A-Z][a-z]+\\b"
+      - type: "company"
+        patterns:
+          - "corp"
+          - "inc"
+          - "llc"
+          - "ltd"
+      - type: "location"
+        description: "Contains city or country names"
+    
+    recommendation: |
+      Change hostname to something generic:
+      sudo hostnamectl set-hostname relay01
+      
+      Avoid:
+      - Personal names
+      - Locations
+      - Company names
+      - Anything identifying
+
+  il_002:
+    id: "IL-002"
+    name: "DNS Configuration Safe"
+    category: "info_leak"
+    severity: "medium"
+    access_level: "basic"
+    enabled: true
+    description: "Checks DNS configuration for potential leaks"
+    
+    files_to_check:
+      - "/etc/resolv.conf"
+    
+    recommended_dns:
+      - "9.9.9.9"  # Quad9
+      - "1.1.1.1"  # Cloudflare
+      - "8.8.8.8"  # Google
+    
+    recommendation: |
+      Consider using privacy-respecting DNS:
+      
+      Edit /etc/resolv.conf:
+      nameserver 9.9.9.9  # Quad9
+      nameserver 1.1.1.1  # Cloudflare
+      
+      Or use systemd-resolved for better management.
+
+  il_003:
+    id: "IL-003"
+    name: "No Identifying Banners"
+    category: "info_leak"
+    severity: "medium"
+    access_level: "basic"
+    enabled: true
+    description: "Checks that service banners don't reveal identifying information"
+    
+    files_to_check:
+      - "/etc/ssh/sshd_config"
+      - "/etc/issue.net"
+    
+    recommendation: |
+      Remove or genericize service banners:
+      
+      For SSH, edit /etc/ssh/sshd_config:
+      Banner /etc/issue.net
+      
+      And keep /etc/issue.net generic or remove it.
+
+  # ==========================================
+  # OPERATIONAL BEST PRACTICES
+  # ==========================================
+
+  op_001:
+    id: "OP-001"
+    name: "Monitoring Configured"
+    category: "best_practices"
+    severity: "medium"
+    access_level: "basic"
+    enabled: true
+    description: "Checks if operator has monitoring set up"
+    
+    tools_to_check:
+      - "nyx"
+      - "tor-arm"
+      - "prometheus"
+      - "node_exporter"
+    
+    recommendation: |
+      Consider setting up monitoring:
+      
+      Install nyx for terminal monitoring:
+      sudo apt install nyx
+      
+      Or set up Prometheus for metrics:
+      https://metrics.torproject.org/
+      
+      Basic monitoring helps catch issues early.
+
+  op_002:
+    id: "OP-002"
+    name: "Backup Relay Keys Exist"
+    category: "best_practices"
+    severity: "medium"
+    access_level: "basic"
+    enabled: true
+    description: "Reminds operators to backup their relay keys"
+    
+    directories_to_check:
+      - "/var/lib/tor/keys"
+    
+    critical_files:
+      - "secret_id_key"
+      - "secret_onion_key_ntor"
+      - "ed25519_master_id_secret_key"
+    
+    recommendation: |
+      IMPORTANT: Backup your relay keys!
+      
+      Keys are in: /var/lib/tor/keys/
+      Backup these files securely:
+      - secret_id_key
+      - secret_onion_key*
+      - ed25519_master_id_secret_key
+      
+      Store backups offline and encrypted.
+      Losing these means losing your relay's identity and reputation.
+
+  op_003:
+    id: "OP-003"
+    name: "Logging Configuration Appropriate"
+    category: "best_practices"
+    severity: "low"
+    access_level: "basic"
+    enabled: true
+    description: "Checks that Tor logging is configured appropriately"
+    
+    files_to_check:
+      - "/etc/tor/torrc"
+      - "/usr/local/etc/tor/torrc"
+    
+    recommended_log_level: "notice"
+    acceptable_log_levels:
+      - "notice"
+      - "warn"
+    
+    avoid_log_levels:
+      - "debug"  # Too verbose
+    
+    recommendation: |
+      Recommended logging configuration:
+      Log notice file /var/log/tor/notices.log
+      
+      Avoid:
+      - Log debug (too verbose, impacts performance)
+      - No logging (can't diagnose issues)
+      
+      For troubleshooting, temporarily use:
+      Log info file /var/log/tor/info.log
+
+  op_004:
+    id: "OP-004"
+    name: "Relay Family Reciprocated"
+    category: "best_practices"
+    severity: "medium"
+    access_level: "network"
+    enabled: true
+    description: "Checks that MyFamily relationships are reciprocal"
+    
+    files_to_check:
+      - "/etc/tor/torrc"
+      - "/usr/local/etc/tor/torrc"
+    
+    external_checks:
+      - url: "https://consensus-health.torproject.org/"
+        purpose: "Query consensus for family declarations"
+    
+    recommendation: |
+      MyFamily must be reciprocal!
+      
+      If your relay lists other relays in MyFamily,
+      those relays must also list YOUR relay.
+      
+      Coordinate with other relay operators to ensure
+      all relays in the family have matching MyFamily lines.
+
+# Implementation priority for phased rollout
+implementation_phases:
+  phase_1_mvp:
+    - "tc_001"  # ContactInfo Present
+    - "tc_005"  # ExitPolicy Configuration
+    - "hs_005"  # Tor Running as Non-Root
+    - "tc_008"  # Tor Version Current
+  
+  phase_2:
+    - "hs_001"  # SSH Password Authentication
+    - "hs_002"  # SSH Root Login
+    - "tc_003"  # Relay Family Declaration
+    - "il_001"  # Hostname Not Identifying
+  
+  phase_3:
+    - "tc_002"  # ContactInfo Not Overly Revealing
+    - "tc_004"  # Port Configuration
+    - "tc_006"  # Bandwidth Configuration
+    - "tc_007"  # Nickname Format
+    - "hs_003"  # Firewall Configured
+    - "hs_004"  # Automatic Updates
+    - "hs_006"  # Data Directory Permissions
+    - "hs_007"  # Unnecessary Services
+    - "il_002"  # DNS Configuration
+    - "il_003"  # Identifying Banners
+    - "op_001"  # Monitoring Configured
+    - "op_002"  # Backup Keys
+    - "op_003"  # Logging Configuration
+    - "op_004"  # Family Reciprocated
+```
+
