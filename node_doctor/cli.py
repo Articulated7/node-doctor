@@ -5,6 +5,7 @@ Command-line interface for Node Doctor.
 
 import click
 from node_doctor import __version__
+from node_doctor.scanner import Scanner
 
 
 @click.group()
@@ -24,30 +25,32 @@ def scan(system, network, full):
         system = True
         network = True
     
-    click.echo("Node Doctor v{}".format(__version__))
-    click.echo("=" * 50)
+    click.echo(f"Node Doctor v{__version__}")
+    click.echo("=" * 70)
     click.echo()
     
-    # TODO: Implement actual scanning logic
     click.echo("🔍 Starting relay configuration scan...")
     click.echo()
     
+    # Confirm for privileged operations
     if system:
         click.echo("⚠️  System-level checks requested (may require elevated privileges)")
-        if not click.confirm("Continue with system checks?"):
+        if not click.confirm("Continue with system checks?", default=True):
             click.echo("Skipping system checks.")
             system = False
+        click.echo()
     
     if network:
         click.echo("⚠️  Network checks will make external connections")
-        if not click.confirm("Continue with network checks?"):
+        if not click.confirm("Continue with network checks?", default=True):
             click.echo("Skipping network checks.")
             network = False
+        click.echo()
     
-    click.echo()
-    click.echo("✅ Scan complete!")
-    click.echo()
-    click.echo("Note: This is a development version. Actual checks not yet implemented.")
+    # Create and run scanner
+    scanner = Scanner(include_system=system, include_network=network)
+    scanner.run_all_checks()
+    scanner.print_results()
 
 
 if __name__ == '__main__':
