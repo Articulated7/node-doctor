@@ -987,6 +987,295 @@ class Scanner:
                 check_id=check_def["id"],
                 name=check_def["name"],
                 status="pass" if​​​​​​​​​​​​​​​​
+                                status="pass" if using_recommended else "warn",
+                severity=check_def["severity"],
+                message=message,
+                recommendation="" if using_recommended else check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+            
+        except Exception as e:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="error",
+                severity=check_def["severity"],
+                message=f"Error checking DNS configuration: {str(e)}",
+                details={"category": check_def["category"]}
+            )
+    
+    def _check_identifying_banners(self, check_def: Dict) -> CheckResult:
+        """Check IL-003: No Identifying Banners."""
+        banner_file = "/etc/issue.net"
+        
+        if not os.path.exists(banner_file):
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message="No banner file found (good)",
+                details={"category": check_def["category"]}
+            )
+        
+        try:
+            with open(banner_file, 'r') as f:
+                banner_content = f.read().strip()
+            
+            if not banner_content:
+                return CheckResult(
+                    check_id=check_def["id"],
+                    name=check_def["name"],
+                    status="pass",
+                    severity=check_def["severity"],
+                    message="Banner file is empty (good)",
+                    details={"category": check_def["category"]}
+                )
+            
+            # Check for identifying information
+            import re
+            identifying_patterns = [
+                r'\b[A-Z][a-z]+\s+[A-Z][a-z]+\b',  # Names
+                r'\b(corp|inc|llc|ltd|company)\b',  # Company
+                r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',  # Phone
+            ]
+            
+            for pattern in identifying_patterns:
+                if re.search(pattern, banner_content, re.IGNORECASE):
+                    return CheckResult(
+                        check_id=check_def["id"],
+                        name=check_def["name"],
+                        status="warn",
+                        severity=check_def["severity"],
+                        message="Banner file may contain identifying information",
+                        recommendation=check_def.get("recommendation", ""),
+                        details={"category": check_def["category"]}
+                    )
+            
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message="Banner appears appropriately generic",
+                details={"category": check_def["category"]}
+            )
+            
+        except PermissionError:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Could not read banner file (permission denied)",
+                details={"category": check_def["category"]}
+            )
+        except Exception as e:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="error",
+                severity=check_def["severity"],
+                message=f"Error checking banner: {str(e)}",
+                details={"category": check_def["category"]}
+            )
+    
+    # ========================================
+    # OPERATIONAL BEST PRACTICES HANDLERS
+    # ========================================
+    
+    def _check_monitoring(self, check_def: Dict) -> CheckResult:
+        """Check OP-001: Monitoring Configured."""
+        monitoring_tools = check_def.get("tools_to_check", [])
+        found_tools = []
+        
+        for tool in monitoring_tools:
+            try:
+                result = subprocess.run(
+                    ["which", tool],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                
+                if result.returncode == 0:
+                    found_tools.append(tool)
+            except Exception:
+                continue
+        
+        if found_tools:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message=f"Monitoring tools found: {', '.join(found_tools)}",
+                details={"category": check_def["category"]}
+            )
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="warn",
+            severity=check_def["severity"],
+            message="No monitoring tools detected",
+            recommendation=check_def.get("recommendation", ""),
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_backup_keys(self, check_def: Dict) -> CheckResult:
+        """Check OP-002: Backup Relay Keys Exist."""
+        keys_dirs = check_def.get("directories_to_check", ["/var/lib/tor/keys"])
+        critical_files = check_def.get("critical_files", [])
+        
+        for keys_dir in keys_dirs:
+            if os.path.exists(keys_dir):
+                found_keys = []
+                missing_keys = []
+                
+                for key_file in critical_files:
+                    key_path = os.path.join(keys_dir, key_file)
+                    if os.path.exists(key_path):
+                        found_keys.append(key_file)
+                    else:
+                        missing_keys.append(key_file)
+                
+                if not found_keys:
+                    return CheckResult(
+                        check_id=check_def["id"],
+                        name=check_def["name"],
+                        status="warn",
+                        severity=check_def["severity"],
+                        message="No relay keys found (relay may not be initialized)",
+                        details={"category": check_def["category"]}
+                    )
+                
+                # We can't actually verify backups exist, just remind
+                return CheckResult(
+                    check_id=check_def["id"],
+                    name=check_def["name"],
+                    status="warn",
+                    severity=check_def["severity"],
+                    message=f"Relay keys found: {', '.join(found_keys)}. REMINDER: Back up these keys!",
+                    recommendation=check_def.get("recommendation", ""),
+                    details={"category": check_def["category"]}
+                )
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="skip",
+            severity=check_def["severity"],
+            message="Could not find Tor keys directory",
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_logging_configuration(self, check_def: Dict) -> CheckResult:
+        """Check OP-003: Logging Configuration Appropriate."""
+        if not self.torrc_parser.exists():
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (torrc not found)",
+                details={"category": check_def["category"]}
+            )
+        
+        log_config = self.torrc_parser.get("Log")
+        
+        if not log_config:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="warn",
+                severity=check_def["severity"],
+                message="No logging configured (using defaults)",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        # Convert to list if single value
+        if not isinstance(log_config, list):
+            log_config = [log_config]
+        
+        # Check log levels
+        recommended_level = check_def.get("recommended_log_level", "notice")
+        avoid_levels = check_def.get("avoid_log_levels", [])
+        
+        log_levels = []
+        for log_line in log_config:
+            parts = log_line.split()
+            if parts:
+                log_levels.append(parts[0].lower())
+        
+        # Check for debug logging
+        if any(level in avoid_levels for level in log_levels):
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="warn",
+                severity=check_def["severity"],
+                message=f"Logging level may be too verbose: {', '.join(log_levels)}",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="pass",
+            severity=check_def["severity"],
+            message=f"Logging configured: {', '.join(log_levels)}",
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_relay_family_reciprocated(self, check_def: Dict) -> CheckResult:
+        """Check OP-004: Relay Family Reciprocated."""
+        if not self.torrc_parser.exists():
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (torrc not found)",
+                details={"category": check_def["category"]}
+            )
+        
+        my_family = self.torrc_parser.get("MyFamily")
+        
+        if not my_family:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message="No relay family declared (single relay)",
+                details={"category": check_def["category"]}
+            )
+        
+        if not self.include_network:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (requires --network flag to verify reciprocation)",
+                recommendation="Use --network flag to check if family members reciprocate",
+                details={"category": check_def["category"]}
+            )
+        
+        # Network check not yet implemented
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="warn",
+            severity=check_def["severity"],
+            message="MyFamily declared but reciprocation check not yet implemented",
+            recommendation=check_def.get("recommendation", ""),
+            details={"category": check_def["category"]}
+        )
+
 
         # Check warning patterns
         import re
