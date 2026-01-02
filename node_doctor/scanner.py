@@ -86,7 +86,7 @@ class Scanner:
             result = self._run_check(check_id, check_def)
             self.reporter.add_result(result)
     
-    def _run_check(self, check_id: str, check_def: Dict) -> CheckResult:
+        def _run_check(self, check_id: str, check_def: Dict) -> CheckResult:
         """
         Run a single check.
         
@@ -99,11 +99,35 @@ class Scanner:
         """
         # Dispatch to appropriate check handler based on check_id
         check_handlers = {
+            # Tor Configuration Checks
             "tc_001": self._check_contactinfo_present,
             "tc_002": self._check_contactinfo_not_revealing,
+            "tc_003": self._check_relay_family_format,
+            "tc_004": self._check_port_configuration,
             "tc_005": self._check_exitpolicy,
+            "tc_006": self._check_bandwidth_configuration,
+            "tc_007": self._check_nickname_format,
+            "tc_008": self._check_tor_version,
+            
+            # Host Security Checks
+            "hs_001": self._check_ssh_password_auth,
+            "hs_002": self._check_ssh_root_login,
+            "hs_003": self._check_firewall,
+            "hs_004": self._check_automatic_updates,
             "hs_005": self._check_tor_not_root,
-            # Add more handlers as we implement them
+            "hs_006": self._check_tor_directory_permissions,
+            "hs_007": self._check_unnecessary_services,
+            
+            # Information Leakage Checks
+            "il_001": self._check_hostname,
+            "il_002": self._check_dns_configuration,
+            "il_003": self._check_identifying_banners,
+            
+            # Operational Best Practices
+            "op_001": self._check_monitoring,
+            "op_002": self._check_backup_keys,
+            "op_003": self._check_logging_configuration,
+            "op_004": self._check_relay_family_reciprocated,
         }
         
         handler = check_handlers.get(check_id)
@@ -129,7 +153,7 @@ class Scanner:
                 message="Check not yet implemented",
                 details={"category": check_def["category"]}
             )
-    
+
     # ========================================
     # TOR CONFIGURATION CHECK HANDLERS
     # ========================================
