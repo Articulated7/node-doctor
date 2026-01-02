@@ -228,7 +228,766 @@ class Scanner:
                 message="Skipped (no ContactInfo set)",
                 details={"category": check_def["category"]}
             )
+            def _check_relay_family_format(self, check_def: Dict) -> CheckResult:
+        """Check TC-003: Relay Family Declaration Format."""
+        if not self.torrc_parser.exists():
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (torrc not found)",
+                details={"category": check_def["category"]}
+            )
         
+        my_family = self.torrc_parser.get("MyFamily")
+        
+        if not my_family:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message="MyFamily not declared (single relay)",
+                details={"category": check_def["category"]}
+            )
+        
+        # Check format: should be $HEX{40},$HEX{40},...
+        import re
+        fingerprint_pattern = r'\$[A-Fa-f0-9]{40}'
+        
+        # Split by comma and check each fingerprint
+        if isinstance(my_family, list):
+            my_family = ",".join(my_family)
+        
+        fingerprints = [fp.strip() for fp in my_family.split(',')]
+        
+        invalid_fps = []
+        for fp in fingerprints:
+            if not re.match(r'^\$[A-Fa-f0-9]{40}$', fp):
+                invalid_fps.append(fp)
+        
+        if invalid_fps:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="fail",
+                severity=check_def["severity"],
+                message=f"MyFamily has invalid fingerprint format: {invalid_fps[0]}",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="pass",
+            severity=check_def["severity"],
+            message=f"MyFamily format is correct ({len(fingerprints)} relays)",
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_port_configuration(self, check_def: Dict) -> CheckResult:
+        """Check TC-004: Port Configuration."""
+        if not self.torrc_parser.exists():
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="error",
+                severity=check_def["severity"],
+                message="Could not find or parse torrc file",
+                details={"category": check_def["category"]}
+            )
+        
+        or_port = self.torrc_parser.get("ORPort")
+        
+        if not or_port:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="fail",
+                severity=check_def["severity"],
+                message="ORPort is not configured",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        # Extract port number (handle formats like "9001" or "0.0.0.0:9001")
+        port_str = or_port.split(':')[-1].strip()
+        
+        try:
+            port_num = int(port_str)
+        except ValueError:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="fail",
+                severity=check_def["severity"],
+                message=f"ORPort has invalid format: {or_port}",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        # Check if port is in valid range
+        port_rules = check_def.get("port_rules", {})
+        min_port = port_rules.get("min_port", 1)
+        max_port = port_rules.get("max_port", 65535)
+        
+        if port_num < min_port or port_num > max_port:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="fail",
+                severity=check_def["severity"],
+                message=f"ORPort {port_num} is outside valid range ({min_port}-{max_port})",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        # Warn about privileged ports
+        privileged_threshold = port_rules.get("privileged_threshold", 1024)
+        if port_num < privileged_threshold:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="warn",
+                severity=check_def["severity"],
+                message=f"ORPort {port_num} is a privileged port (requires root)",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        # Check for blocked ports
+        blocked_ports = port_rules.get("blocked_ports", [])
+        if port_num in blocked_ports:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="warn",
+                severity=check_def["severity"],
+                message=f"ORPort {port_num} is commonly blocked by ISPs",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="pass",
+            severity=check_def["severity"],
+            message=f"ORPort {port_num} is configured appropriately",
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_bandwidth_configuration(self, check_def: Dict) -> CheckResult:
+        """Check TC-006: Bandwidth Configuration."""
+        if not self.torrc_parser.exists():
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (torrc not found)",
+                details={"category": check_def["category"]}
+            )
+        
+        rate = self.torrc_parser.get("RelayBandwidthRate")
+        burst = self.torrc_parser.get("RelayBandwidthBurst")
+        
+        if not rate and not burst:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message="Bandwidth limits not set (using available bandwidth)",
+                details={"category": check_def["category"]}
+            )
+        
+        if rate and burst:
+            # Both are set, check that burst >= rate
+            # This is a simplified check - actual parsing would be more complex
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message="Bandwidth limits configured",
+                details={"category": check_def["category"]}
+            )
+        
+        # Only one is set - this is unusual
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="warn",
+            severity=check_def["severity"],
+            message="Only one bandwidth limit is set (Rate or Burst)",
+            recommendation=check_def.get("recommendation", ""),
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_nickname_format(self, check_def: Dict) -> CheckResult:
+        """Check TC-007: Nickname Format."""
+        if not self.torrc_parser.exists():
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (torrc not found)",
+                details={"category": check_def["category"]}
+            )
+        
+        nickname = self.torrc_parser.get("Nickname")
+        
+        if not nickname:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message="No nickname set (will use default)",
+                details={"category": check_def["category"]}
+            )
+        
+        nickname_rules = check_def.get("nickname_rules", {})
+        min_length = nickname_rules.get("min_length", 1)
+        max_length = nickname_rules.get("max_length", 19)
+        reserved_names = nickname_rules.get("reserved_names", [])
+        
+        # Check length
+        if len(nickname) < min_length or len(nickname) > max_length:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="fail",
+                severity=check_def["severity"],
+                message=f"Nickname '{nickname}' length invalid (must be {min_length}-{max_length} chars)",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        # Check for alphanumeric only
+        if not nickname.isalnum():
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="fail",
+                severity=check_def["severity"],
+                message=f"Nickname '{nickname}' contains invalid characters (alphanumeric only)",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        # Check reserved names
+        if nickname.lower() in [n.lower() for n in reserved_names]:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="warn",
+                severity=check_def["severity"],
+                message=f"Nickname '{nickname}' is a reserved/default name",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="pass",
+            severity=check_def["severity"],
+            message=f"Nickname '{nickname}' format is valid",
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_tor_version(self, check_def: Dict) -> CheckResult:
+        """Check TC-008: Tor Version Current."""
+        try:
+            result = subprocess.run(
+                ["tor", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode != 0:
+                return CheckResult(
+                    check_id=check_def["id"],
+                    name=check_def["name"],
+                    status="error",
+                    severity=check_def["severity"],
+                    message="Could not determine Tor version",
+                    details={"category": check_def["category"]}
+                )
+            
+            version_line = result.stdout.strip().split('\n')[0]
+            
+            # For now, just report the version
+            # Full implementation would query torproject.org for current version
+            if self.include_network:
+                message = f"Tor version: {version_line} (network check not yet implemented)"
+            else:
+                message = f"Tor version: {version_line} (use --network to check if current)"
+            
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message=message,
+                details={"category": check_def["category"]}
+            )
+            
+        except FileNotFoundError:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="error",
+                severity=check_def["severity"],
+                message="Tor is not installed or not in PATH",
+                details={"category": check_def["category"]}
+            )
+        except Exception as e:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="error",
+                severity=check_def["severity"],
+                message=f"Error checking Tor version: {str(e)}",
+                details={"category": check_def["category"]}
+            )
+    
+    # ========================================
+    # HOST SECURITY CHECK HANDLERS
+    # ========================================
+    
+    def _check_ssh_password_auth(self, check_def: Dict) -> CheckResult:
+        """Check HS-001: SSH Password Authentication Disabled."""
+        if not self.ssh_parser or not self.ssh_parser.exists():
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (sshd_config not accessible)",
+                details={"category": check_def["category"]}
+            )
+        
+        password_auth = self.ssh_parser.get("passwordauthentication", "yes")
+        challenge_auth = self.ssh_parser.get("challengeresponseauthentication", "yes")
+        
+        issues = []
+        
+        if password_auth != "no":
+            issues.append("PasswordAuthentication is not set to 'no'")
+        
+        if challenge_auth != "no":
+            issues.append("ChallengeResponseAuthentication is not set to 'no'")
+        
+        if issues:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="fail",
+                severity=check_def["severity"],
+                message="; ".join(issues),
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="pass",
+            severity=check_def["severity"],
+            message="SSH password authentication is disabled",
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_ssh_root_login(self, check_def: Dict) -> CheckResult:
+        """Check HS-002: SSH Root Login Disabled."""
+        if not self.ssh_parser or not self.ssh_parser.exists():
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (sshd_config not accessible)",
+                details={"category": check_def["category"]}
+            )
+        
+        permit_root = self.ssh_parser.get("permitrootlogin", "yes")
+        
+        acceptable = check_def.get("acceptable_settings", {}).get("PermitRootLogin", [])
+        acceptable_lower = [v.lower() for v in acceptable]
+        
+        if permit_root not in acceptable_lower:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="fail",
+                severity=check_def["severity"],
+                message=f"PermitRootLogin is set to '{permit_root}' (should be {' or '.join(acceptable)})",
+                recommendation=check_def.get("recommendation", ""),
+                details={"category": check_def["category"]}
+            )
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="pass",
+            severity=check_def["severity"],
+            message=f"SSH root login is properly restricted ({permit_root})",
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_firewall(self, check_def: Dict) -> CheckResult:
+        """Check HS-003: Firewall Configured."""
+        if not self.include_system:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (requires --system flag)",
+                details={"category": check_def["category"]}
+            )
+        
+        # Try common firewall commands
+        firewalls_to_check = [
+            (["ufw", "status"], "ufw"),
+            (["iptables", "-L", "-n"], "iptables"),
+            (["firewall-cmd", "--state"], "firewalld"),
+        ]
+        
+        for cmd, fw_name in firewalls_to_check:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                
+                if result.returncode == 0:
+                    if "inactive" in result.stdout.lower() or "not running" in result.stdout.lower():
+                        return CheckResult(
+                            check_id=check_def["id"],
+                            name=check_def["name"],
+                            status="fail",
+                            severity=check_def["severity"],
+                            message=f"{fw_name} is installed but inactive",
+                            recommendation=check_def.get("recommendation", ""),
+                            details={"category": check_def["category"]}
+                        )
+                    
+                    return CheckResult(
+                        check_id=check_def["id"],
+                        name=check_def["name"],
+                        status="pass",
+                        severity=check_def["severity"],
+                        message=f"Firewall is active ({fw_name})",
+                        details={"category": check_def["category"]}
+                    )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="warn",
+            severity=check_def["severity"],
+            message="No firewall detected (ufw, iptables, or firewalld)",
+            recommendation=check_def.get("recommendation", ""),
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_automatic_updates(self, check_def: Dict) -> CheckResult:
+        """Check HS-004: Automatic Security Updates Enabled."""
+        if not self.include_system:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (requires --system flag)",
+                details={"category": check_def["category"]}
+            )
+        
+        # Check for common auto-update packages
+        packages_to_check = [
+            ("unattended-upgrades", "Debian/Ubuntu"),
+            ("yum-cron", "RHEL/CentOS"),
+            ("dnf-automatic", "Fedora"),
+        ]
+        
+        for package, distro in packages_to_check:
+            try:
+                result = subprocess.run(
+                    ["systemctl", "is-active", package],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                
+                if result.returncode == 0 and "active" in result.stdout:
+                    return CheckResult(
+                        check_id=check_def["id"],
+                        name=check_def["name"],
+                        status="pass",
+                        severity=check_def["severity"],
+                        message=f"Automatic updates enabled ({package})",
+                        details={"category": check_def["category"]}
+                    )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="warn",
+            severity=check_def["severity"],
+            message="Automatic security updates not detected",
+            recommendation=check_def.get("recommendation", ""),
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_tor_directory_permissions(self, check_def: Dict) -> CheckResult:
+        """Check HS-006: Tor Data Directory Permissions."""
+        if not self.include_system:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (requires --system flag)",
+                details={"category": check_def["category"]}
+            )
+        
+        tor_data_dirs = ["/var/lib/tor", "/var/db/tor"]
+        
+        for data_dir in tor_data_dirs:
+            if os.path.exists(data_dir):
+                stat_info = os.stat(data_dir)
+                mode = oct(stat_info.st_mode)[-3:]
+                
+                if mode != "700":
+                    return CheckResult(
+                        check_id=check_def["id"],
+                        name=check_def["name"],
+                        status="fail",
+                        severity=check_def["severity"],
+                        message=f"Tor data directory has permissions {mode} (should be 700)",
+                        recommendation=check_def.get("recommendation", ""),
+                        details={"category": check_def["category"]}
+                    )
+                
+                return CheckResult(
+                    check_id=check_def["id"],
+                    name=check_def["name"],
+                    status="pass",
+                    severity=check_def["severity"],
+                    message=f"Tor data directory permissions are correct (700)",
+                    details={"category": check_def["category"]}
+                )
+        
+        return CheckResult(
+            check_id=check_def["id"],
+            name=check_def["name"],
+            status="warn",
+            severity=check_def["severity"],
+            message="Could not find Tor data directory",
+            details={"category": check_def["category"]}
+        )
+    
+    def _check_unnecessary_services(self, check_def: Dict) -> CheckResult:
+        """Check HS-007: Unnecessary Services Disabled."""
+        if not self.include_system:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Skipped (requires --system flag)",
+                details={"category": check_def["category"]}
+            )
+        
+        try:
+            result = subprocess.run(
+                ["systemctl", "list-units", "--type=service", "--state=running", "--no-pager"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode != 0:
+                return CheckResult(
+                    check_id=check_def["id"],
+                    name=check_def["name"],
+                    status="skip",
+                    severity=check_def["severity"],
+                    message="Could not list running services",
+                    details={"category": check_def["category"]}
+                )
+            
+            suspicious_services = check_def.get("suspicious_services", [])
+            found_suspicious = []
+            
+            for service in suspicious_services:
+                if service in result.stdout.lower():
+                    found_suspicious.append(service)
+            
+            if found_suspicious:
+                return CheckResult(
+                    check_id=check_def["id"],
+                    name=check_def["name"],
+                    status="warn",
+                    severity=check_def["severity"],
+                    message=f"Potentially unnecessary services running: {', '.join(found_suspicious)}",
+                    recommendation=check_def.get("recommendation", ""),
+                    details={"category": check_def["category"]}
+                )
+            
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message="No obviously unnecessary services detected",
+                details={"category": check_def["category"]}
+            )
+            
+        except Exception as e:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="error",
+                severity=check_def["severity"],
+                message=f"Error checking services: {str(e)}",
+                details={"category": check_def["category"]}
+            )
+    
+    # ========================================
+    # INFORMATION LEAKAGE CHECK HANDLERS
+    # ========================================
+    
+    def _check_hostname(self, check_def: Dict) -> CheckResult:
+        """Check IL-001: Hostname Not Identifying."""
+        try:
+            result = subprocess.run(
+                ["hostname"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            hostname = result.stdout.strip()
+            
+            if not hostname:
+                return CheckResult(
+                    check_id=check_def["id"],
+                    name=check_def["name"],
+                    status="error",
+                    severity=check_def["severity"],
+                    message="Could not determine hostname",
+                    details={"category": check_def["category"]}
+                )
+            
+            # Check for identifying patterns
+            import re
+            warnings = []
+            
+            # Check for name-like patterns
+            if re.search(r'\b[A-Z][a-z]+[A-Z][a-z]+\b', hostname):
+                warnings.append("appears to contain a personal name")
+            
+            # Check for company indicators
+            company_indicators = ['corp', 'inc', 'llc', 'ltd', 'company']
+            if any(indicator in hostname.lower() for indicator in company_indicators):
+                warnings.append("appears to contain company information")
+            
+            if warnings:
+                return CheckResult(
+                    check_id=check_def["id"],
+                    name=check_def["name"],
+                    status="warn",
+                    severity=check_def["severity"],
+                    message=f"Hostname '{hostname}' {', '.join(warnings)}",
+                    recommendation=check_def.get("recommendation", ""),
+                    details={"category": check_def["category"]}
+                )
+            
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass",
+                severity=check_def["severity"],
+                message=f"Hostname '{hostname}' appears appropriately generic",
+                details={"category": check_def["category"]}
+            )
+            
+        except Exception as e:
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="error",
+                severity=check_def["severity"],
+                message=f"Error checking hostname: {str(e)}",
+                details={"category": check_def["category"]}
+            )
+    
+    def _check_dns_configuration(self, check_def: Dict) -> CheckResult:
+        """Check IL-002: DNS Configuration Safe."""
+        resolv_conf_path = "/etc/resolv.conf"
+        
+        if not os.path.exists(resolv_conf_path):
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="skip",
+                severity=check_def["severity"],
+                message="Could not find /etc/resolv.conf",
+                details={"category": check_def["category"]}
+            )
+        
+        try:
+            with open(resolv_conf_path, 'r') as f:
+                content = f.read()
+            
+            # Extract nameservers
+            nameservers = []
+            for line in content.split('\n'):
+                if line.strip().startswith('nameserver'):
+                    ns = line.split()[1] if len(line.split()) > 1 else None
+                    if ns:
+                        nameservers.append(ns)
+            
+            if not nameservers:
+                return CheckResult(
+                    check_id=check_def["id"],
+                    name=check_def["name"],
+                    status="warn",
+                    severity=check_def["severity"],
+                    message="No nameservers found in resolv.conf",
+                    details={"category": check_def["category"]}
+                )
+            
+            recommended_dns = check_def.get("recommended_dns", [])
+            
+            # Check if using recommended DNS
+            using_recommended = any(ns in recommended_dns for ns in nameservers)
+            
+            if using_recommended:
+                message = f"Using privacy-respecting DNS: {', '.join(nameservers)}"
+            else:
+                message = f"DNS servers: {', '.join(nameservers)} (consider privacy-respecting alternatives)"
+            
+            return CheckResult(
+                check_id=check_def["id"],
+                name=check_def["name"],
+                status="pass" if​​​​​​​​​​​​​​​​
+
         # Check warning patterns
         import re
         warnings = []
